@@ -1,0 +1,70 @@
+name: Build PROD Docker TAR
+
+on:
+  workflow_dispatch:    # 手动触发
+  push:
+    branches: [ main ]  # 推 main 也会触发（可按需删掉）
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: bolt.diy
+  TARGET: bolt-ai-production        # ← Dockerfile 的生产构建 target 名称
+  PLATFORM: linux/amd64
+
+jobs:
+  build-tar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 可选：开启构建缓存，加速后续重复构建
+      - name: Prepare build cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build PROD image and export as docker-archive TAR
+        run: |
+          TAG=${{ github.sha }}
+          OUT=bolt_diy_prod_${TAG}.tar
+
+          docker buildx build \
+            --platform ${PLATFORM} \
+            --target ${TARGET} \
+            -t ${IMAGE_NAME}:prod-${TAG} \
+            --output type=docker,dest=${OUT} \
+            --build-context .=. \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            .
+
+          # 用新缓存替换旧缓存（避免无限膨胀）
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+          # 产物校验信息（方便你核对完整性）
+          echo "sha256sum for ${OUT}:"
+          sha256sum "${OUT}" | tee ${OUT}.sha256
+
+          # 打印 tar 基本信息
+          ls -lh "${OUT}"
+
+      - name: Upload TAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bolt_diy_prod_${{ github.sha }}.tar
+          path: |
+            bolt_diy_prod_${{ github.sha }}.tar
+            bolt_diy_prod_${{ github.sha }}.tar.sha256
+          retention-days: 10
+          if-no-files-found: error
